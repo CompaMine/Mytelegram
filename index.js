@@ -1,6 +1,7 @@
 const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
 const app = express();
+const cron = require('node-cron');
 
 const token = '8293319216:AAHV2jguaERB-_PMFJcjvh3tCyBMIwRM9rQ';
 const bot = new TelegramBot(token, { polling: false });
@@ -15,6 +16,7 @@ const userOrders = {};
 const adminPassword = 'DOBRO123q';
 const menuItems = ['Борщ', 'Котлетка', 'Пюрешка с сосиской❤️', 'Сок', 'Коктейль'];
 const reminders = {};
+let lastRestartTime = new Date();
 
 // Клавиатуры
 const mainMenu = {
@@ -22,7 +24,8 @@ const mainMenu = {
     keyboard: [
       ['🍽️ Меню'],
       ['❌ Отменить заказ'],
-      ['⏰ Напоминания | BETA']
+      ['⏰ Напоминания | BETA'],
+      ['✏️ Сменить ник']
     ],
     resize_keyboard: true
   }
@@ -60,16 +63,37 @@ const cancelMenu = {
 const reminderMenu = {
   reply_markup: {
     keyboard: [
+      ['⏰ Установить время'],
       ['📅 Установить дату'],
-      ['✅ Включить', '❌ Выключить'],
-      ['✏️ Изменить время'],
+      ['✅ Активировать', '❌ Деактивировать'],
+      ['🗑️ Удалить напоминание'],
       ['⬅️ Назад']
     ],
     resize_keyboard: true
   }
 };
 
-// Обработчик команды /start
+// Уведомление о перезагрузке
+function notifyAboutRestart() {
+  const restartTime = lastRestartTime.toLocaleTimeString();
+  const restartDate = lastRestartTime.toLocaleDateString();
+  
+  for (const userId in users) {
+    if (users[userId] && users[userId].step !== 'register') {
+      bot.sendMessage(
+        userId,
+        `🔄 Бот был перезагружен и снова онлайн!\n` +
+        `Последнее обновление: ${restartDate} в ${restartTime}\n` +
+        `Что нового:\n` +
+        `- Добавлена функция смены ника\n` +
+        `- Улучшена система напоминаний\n` +
+        `- Исправлены мелкие ошибки`
+      );
+    }
+  }
+}
+
+// Инициализация бота
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
@@ -82,7 +106,7 @@ bot.onText(/\/start/, (msg) => {
   }
 });
 
-// Обработчик команды "Блюда"
+// Секретная команда для редактирования меню
 bot.onText(/Блюда/, (msg) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
@@ -90,50 +114,59 @@ bot.onText(/Блюда/, (msg) => {
   users[userId] = { ...users[userId], step: 'waiting_password' };
 });
 
-// Проверка напоминаний
-setInterval(() => {
-  const now = new Date();
-  const currentHours = now.getHours();
-  const currentMinutes = now.getMinutes();
-  const currentTime = `${currentHours}:${currentMinutes.toString().padStart(2, '0')}`;
-  const currentDay = now.getDate();
-  const currentMonth = now.getMonth() + 1;
-  const currentDate = `${currentDay}.${currentMonth}`;
-
-  for (const userId in reminders) {
-    const reminder = reminders[userId];
-    if (!reminder || !reminder.active) continue;
-
-    const reminderTime = reminder.time;
-    const reminderDate = reminder.date;
-    
-    // Проверяем совпадение времени
-    const timeMatches = reminderTime === currentTime;
-    
-    // Проверяем совпадение даты (если указана) или каждый день
-    const dateMatches = !reminderDate || reminderDate === currentDate;
-    
-    // Проверяем, не отправляли ли уже сегодня
-    const notSentToday = !reminder.lastSent || reminder.lastSent !== currentDate;
-
-    if (timeMatches && dateMatches && notSentToday) {
-      bot.sendMessage(userId, `⏰ Напоминание! Пора сделать заказ!`);
-      reminders[userId].lastSent = currentDate;
+// Система напоминаний BETA
+function setupReminder(userId, time, date) {
+  if (reminders[userId]) {
+    if (reminders[userId].task) {
+      reminders[userId].task.stop();
     }
   }
-}, 60000); // Проверка каждую минуту
 
-// Обработка всех сообщений
+  const [hours, minutes] = time.split(':').map(Number);
+  let cronPattern;
+
+  if (date) {
+    const [day, month] = date.split('.').map(Number);
+    cronPattern = `${minutes} ${hours} ${day} ${month} *`;
+  } else {
+    cronPattern = `${minutes} ${hours} * * *`;
+  }
+
+  reminders[userId] = {
+    time,
+    date: date || null,
+    active: true,
+    task: cron.schedule(cronPattern, () => {
+      if (reminders[userId] && reminders[userId].active) {
+        bot.sendMessage(userId, '⏰ Напоминание! Пора сделать заказ!');
+      }
+    })
+  };
+}
+
+// Обработка сообщений
 bot.on('message', (msg) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
   const text = msg.text;
   const today = new Date();
-  const currentDay = today.getDate();
-  const currentMonth = today.getMonth() + 1;
-  const currentDate = `${currentDay}.${currentMonth}`;
+  const currentDate = `${today.getDate()}.${today.getMonth() + 1}`;
 
   if (!users[userId]) return;
+
+  // Смена ника
+  if (text === '✏️ Сменить ник') {
+    bot.sendMessage(chatId, 'Введите новое имя и фамилию:');
+    users[userId].step = 'changing_name';
+    return;
+  }
+
+  if (users[userId].step === 'changing_name') {
+    users[userId].name = text;
+    bot.sendMessage(chatId, `✅ Ваш ник успешно изменен на: ${text}`, mainMenu);
+    users[userId].step = 'main';
+    return;
+  }
 
   // Редактирование меню
   if (users[userId].step === 'waiting_password') {
@@ -173,16 +206,16 @@ bot.on('message', (msg) => {
     return;
   }
 
-  // Напоминания
-  if (text === '⏰ Напоминания') {
+  // Напоминания BETA
+  if (text === '⏰ Напоминания | BETA') {
     if (reminders[userId]) {
-      let reminderInfo = `Текущее напоминание:\n`;
-      reminderInfo += `⏰ Время: ${reminders[userId].time}\n`;
-      reminderInfo += `📅 Дата: ${reminders[userId].date || 'Каждый день'}\n`;
-      reminderInfo += `Статус: ${reminders[userId].active ? '✅ Включено' : '❌ Выключено'}`;
+      let status = reminders[userId].active ? '✅ Активно' : '❌ Неактивно';
+      let dateInfo = reminders[userId].date ? `Дата: ${reminders[userId].date}` : 'Повтор: Ежедневно';
       
-      bot.sendMessage(chatId, reminderInfo, reminderMenu);
-      users[userId].step = 'reminder_menu';
+      bot.sendMessage(chatId, 
+        `Текущее напоминание:\n⏰ Время: ${reminders[userId].time}\n${dateInfo}\nСтатус: ${status}`,
+        reminderMenu
+      );
     } else {
       bot.sendMessage(chatId, 'Введите время напоминания в формате ЧЧ:ММ (например: 13:07)');
       users[userId].step = 'set_reminder_time';
@@ -190,19 +223,11 @@ bot.on('message', (msg) => {
     return;
   }
 
-  // Установка времени напоминания
   if (users[userId].step === 'set_reminder_time') {
     if (/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/.test(text)) {
-      reminders[userId] = {
-        time: text,
-        date: null,
-        active: false,
-        lastSent: null
-      };
+      users[userId].reminderTime = text;
       bot.sendMessage(chatId, 
-        `Время напоминания установлено на ${text}.\n` +
-        `Хотите установить конкретную дату? (например: 15.07)\n` +
-        `Или напишите "Каждый день" для ежедневных напоминаний`,
+        `Время установлено на ${text}.\nХотите установить конкретную дату? (например: 15.07)\nИли напишите "Ежедневно"`,
         reminderMenu
       );
       users[userId].step = 'set_reminder_date';
@@ -212,78 +237,69 @@ bot.on('message', (msg) => {
     return;
   }
 
-  // Установка даты напоминания
   if (users[userId].step === 'set_reminder_date') {
     if (/^\d{1,2}\.\d{1,2}$/.test(text)) {
       const [day, month] = text.split('.');
-      const dayNum = parseInt(day);
-      const monthNum = parseInt(month);
-      
-      if (dayNum > 0 && dayNum <= 31 && monthNum > 0 && monthNum <= 12) {
-        reminders[userId].date = text;
+      if (day > 0 && day <= 31 && month > 0 && month <= 12) {
+        setupReminder(userId, users[userId].reminderTime, text);
         bot.sendMessage(chatId, 
-          `Дата напоминания установлена на ${text} в ${reminders[userId].time}.\n` +
-          `Активировать напоминание?`,
+          `Напоминание установлено на ${text} в ${users[userId].reminderTime}.\n` +
+          `Статус: ✅ Активно`,
           reminderMenu
         );
-        users[userId].step = 'reminder_menu';
       } else {
         bot.sendMessage(chatId, 'Неверная дата. Введите дату в формате ДД.ММ (например: 15.07)');
       }
-    } else if (text.toLowerCase().includes('каждый день')) {
-      reminders[userId].date = null;
+    } else if (text.toLowerCase() === 'ежедневно') {
+      setupReminder(userId, users[userId].reminderTime, null);
       bot.sendMessage(chatId, 
-        `Напоминание будет приходить каждый день в ${reminders[userId].time}.\n` +
-        `Активировать?`,
+        `Ежедневное напоминание установлено на ${users[userId].reminderTime}.\n` +
+        `Статус: ✅ Активно`,
         reminderMenu
       );
-      users[userId].step = 'reminder_menu';
-    } else {
-      reminders[userId].date = null;
-      bot.sendMessage(chatId, 
-        `Напоминание будет приходить каждый день в ${reminders[userId].time}.\n` +
-        `Активировать?`,
-        reminderMenu
-      );
-      users[userId].step = 'reminder_menu';
     }
+    users[userId].step = 'main';
     return;
   }
 
-  // Меню управления напоминаниями
-  if (users[userId].step === 'reminder_menu') {
-    if (text === '📅 Установить дату') {
-      bot.sendMessage(chatId, 'Введите дату в формате ДД.ММ (например: 15.07) или "Каждый день"');
-      users[userId].step = 'set_reminder_date';
-      return;
+  // Управление напоминаниями
+  if (text === '⏰ Установить время') {
+    bot.sendMessage(chatId, 'Введите новое время в формате ЧЧ:ММ (например: 13:07)');
+    users[userId].step = 'set_reminder_time';
+    return;
+  }
+
+  if (text === '📅 Установить дату') {
+    bot.sendMessage(chatId, 'Введите дату в формате ДД.ММ (например: 15.07) или "Ежедневно"');
+    users[userId].step = 'set_reminder_date';
+    return;
+  }
+
+  if (text === '✅ Активировать' && reminders[userId]) {
+    reminders[userId].active = true;
+    bot.sendMessage(chatId, 'Напоминание активировано!', reminderMenu);
+    return;
+  }
+
+  if (text === '❌ Деактивировать' && reminders[userId]) {
+    reminders[userId].active = false;
+    bot.sendMessage(chatId, 'Напоминание деактивировано!', reminderMenu);
+    return;
+  }
+
+  if (text === '🗑️ Удалить напоминание' && reminders[userId]) {
+    if (reminders[userId].task) {
+      reminders[userId].task.stop();
     }
-    else if (text === '✏️ Изменить время') {
-      bot.sendMessage(chatId, 'Введите новое время в формате ЧЧ:ММ (например: 13:07)');
-      users[userId].step = 'set_reminder_time';
-      return;
-    }
-    else if (text === '✅ Включить') {
-      reminders[userId].active = true;
-      bot.sendMessage(chatId, 
-        `Напоминание включено!\n` +
-        `⏰ Время: ${reminders[userId].time}\n` +
-        `📅 Дата: ${reminders[userId].date || 'Каждый день'}`,
-        mainMenu
-      );
-      users[userId].step = 'main';
-      return;
-    }
-    else if (text === '❌ Выключить') {
-      reminders[userId].active = false;
-      bot.sendMessage(chatId, 'Напоминание выключено!', mainMenu);
-      users[userId].step = 'main';
-      return;
-    }
-    else if (text === '⬅️ Назад') {
-      showMainMenu(chatId);
-      users[userId].step = 'main';
-      return;
-    }
+    delete reminders[userId];
+    bot.sendMessage(chatId, 'Напоминание удалено!', mainMenu);
+    return;
+  }
+
+  if (text === '⬅️ Назад') {
+    showMainMenu(chatId);
+    users[userId].step = 'main';
+    return;
   }
 
   // Регистрация
@@ -445,4 +461,6 @@ app.post('/webhook', (req, res) => {
 
 app.listen(process.env.PORT || 3000, () => {
   console.log('Сервер запущен!');
+  lastRestartTime = new Date();
+  setTimeout(notifyAboutRestart, 5000); // Уведомление через 5 секунд после запуска
 });
