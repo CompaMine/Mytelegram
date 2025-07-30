@@ -2,24 +2,20 @@ const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
 const app = express();
 
-const token = '8293319216:AAHV2jguaERB-_PMFJcjvh3tCyBMIwRM9rQ'; // Твой токен
+const token = '8293319216:AAHV2jguaERB-_PMFJcjvh3tCyBMIwRM9rQ';
 const bot = new TelegramBot(token, { polling: false });
 
-// База данных (вместо БД используем объект)
+// База данных
 const users = {};
 const timeSlots = {
   '14:00': { max: 10, current: 0 },
   '15:00': { max: 10, current: 0 }
 };
-const userDailyOrders = {}; // { userId: { date: 'YYYY-MM-DD', count: 0 } }
 
 // Клавиатуры
 const mainMenu = {
   reply_markup: {
-    keyboard: [
-      ['🍽️ Меню'],
-      ['❌ Отменить заказ']
-    ],
+    keyboard: [['🍽️ Меню'], ['❌ Отменить заказ']],
     resize_keyboard: true
   }
 };
@@ -30,7 +26,7 @@ const foodMenu = {
       ['Борщ', 'Щроб'],
       ['Борщик', 'Борщище'],
       ['Борщииии'],
-      ['⬅️ Назад']
+      ['✅ Готово', '⬅️ Назад']
     ],
     resize_keyboard: true
   }
@@ -46,25 +42,19 @@ const timeMenu = {
   }
 };
 
-// Обработчик /start
+// Обработчики
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
-
+  
   if (!users[userId]) {
-    bot.sendMessage(chatId, 'Введите имя и фамилию (например: Иван Иванов)');
+    bot.sendMessage(chatId, 'Введите имя и фамилию:');
     users[userId] = { step: 'register' };
   } else {
     showMainMenu(chatId);
   }
 });
 
-// Показ главного меню
-function showMainMenu(chatId) {
-  bot.sendMessage(chatId, 'Главное меню:', mainMenu);
-}
-
-// Обработка сообщений
 bot.on('message', (msg) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
@@ -87,78 +77,59 @@ bot.on('message', (msg) => {
   if (text === '🍽️ Меню') {
     bot.sendMessage(chatId, 'Выберите блюдо (до 3):', foodMenu);
     users[userId].step = 'food';
-  } 
-  // Отмена заказа
-  else if (text === '❌ Отменить заказ') {
-    if (users[userId].timeSlot) {
-      timeSlots[users[userId].timeSlot].current--;
-      users[userId].timeSlot = null;
-      users[userId].orders = [];
-      bot.sendMessage(chatId, 'Заказ отменен!', mainMenu);
-    } else {
-      bot.sendMessage(chatId, 'У вас нет активного заказа.', mainMenu);
-    }
   }
+
   // Выбор блюд
-  else if (users[userId].step === 'food' && ['Борщ', 'Щроб', 'Борщик', 'Борщище', 'Борщииии'].includes(text)) {
-    if (users[userId].orders.length < 3) {
-      users[userId].orders.push(text);
-      bot.sendMessage(chatId, `✅ Добавлено: ${text}. Выбрано: ${users[userId].orders.join(', ')}`, foodMenu);
-    } else {
-      bot.sendMessage(chatId, '❌ Можно выбрать не больше 3 блюд!', foodMenu);
+  else if (users[userId].step === 'food') {
+    if (['Борщ', 'Щроб', 'Борщик', 'Борщище', 'Борщииии'].includes(text)) {
+      if (users[userId].orders.length < 3) {
+        users[userId].orders.push(text);
+        bot.sendMessage(chatId, `✅ Добавлено: ${text}\nВыбрано: ${users[userId].orders.join(', ')}`, foodMenu);
+      } else {
+        bot.sendMessage(chatId, '❌ Максимум 3 блюда!', foodMenu);
+      }
+    }
+    else if (text === '✅ Готово') {
+      if (users[userId].orders.length === 0) {
+        bot.sendMessage(chatId, '❌ Выберите хотя бы 1 блюдо!', foodMenu);
+      } else {
+        bot.sendMessage(chatId, 'Выберите время:', timeMenu);
+        users[userId].step = 'time';
+      }
+    }
+    else if (text === '⬅️ Назад') {
+      showMainMenu(chatId);
     }
   }
+
   // Выбор времени
-  else if (users[userId].step === 'food' && text === 'Готово') {
-    if (users[userId].orders.length === 0) {
-      bot.sendMessage(chatId, '❌ Вы не выбрали ни одного блюда!', foodMenu);
-    } else {
-      bot.sendMessage(chatId, 'Выберите время:', timeMenu);
-      users[userId].step = 'time';
+  else if (users[userId].step === 'time') {
+    if (['14:00', '15:00'].includes(text)) {
+      if (timeSlots[text].current >= timeSlots[text].max) {
+        bot.sendMessage(chatId, '❌ Все места заняты! Выберите другое время.', timeMenu);
+      } else {
+        timeSlots[text].current++;
+        bot.sendMessage(chatId, `✅ Время ${text} выбрано!\nОтправляю заказ...`, mainMenu);
+        
+        // Отправка уведомления вам
+        const orderText = `Новый заказ от ${users[userId].name}\n` +
+                          `Блюда: ${users[userId].orders.join(', ')}\n` +
+                          `Время: ${text}\n` +
+                          `Осталось мест: ${timeSlots[text].max - timeSlots[text].current}`;
+        bot.sendMessage('5266215596', orderText);
+        
+        users[userId].orders = [];
+        users[userId].step = 'main';
+      }
     }
-  }
-  // Подтверждение времени
-  else if (users[userId].step === 'time' && ['14:00', '15:00'].includes(text)) {
-    const today = new Date().toISOString().split('T')[0];
-    if (!userDailyOrders[userId]) userDailyOrders[userId] = { date: today, count: 0 };
-    
-    // Проверка на 2 заказа в день
-    if (userDailyOrders[userId].date === today && userDailyOrders[userId].count >= 2) {
-      bot.sendMessage(chatId, '❌ Ваша еда закончилась 🎉', mainMenu);
-      return;
+    else if (text === '⬅️ Назад') {
+      bot.sendMessage(chatId, 'Выберите блюдо:', foodMenu);
+      users[userId].step = 'food';
     }
-
-    // Проверка свободных мест
-    if (timeSlots[text].current >= timeSlots[text].max) {
-      bot.sendMessage(chatId, '❌ Не успел 😈 Мест нет!', mainMenu);
-      return;
-    }
-
-    // Бронируем место
-    timeSlots[text].current++;
-    users[userId].timeSlot = text;
-    userDailyOrders[userId].count++;
-
-    // Отправка заказа
-    const orderText = `Новый заказ от ${users[userId].name} (@${msg.from.username || 'нет_юзернейма'})\n` +
-                      `Время: ${text}\n` +
-                      `Блюда: ${users[userId].orders.join(', ')}\n` +
-                      `Осталось мест: ${timeSlots[text].max - timeSlots[text].current}`;
-    
-    bot.sendMessage('5266215596', orderText); // Твой ID
-    bot.sendMessage(chatId, `✅ Заказ принят! Время: ${text}\nОсталось мест: ${timeSlots[text].max - timeSlots[text].current}`, mainMenu);
-    
-    users[userId].orders = [];
-    users[userId].step = 'main';
-  }
-  // Назад
-  else if (text === '⬅️ Назад') {
-    showMainMenu(chatId);
-    users[userId].step = 'main';
   }
 });
 
-// Для Render
+// Запуск сервера
 app.use(express.json());
 app.post('/webhook', (req, res) => {
   bot.processUpdate(req.body);
@@ -166,5 +137,9 @@ app.post('/webhook', (req, res) => {
 });
 
 app.listen(process.env.PORT || 3000, () => {
-  console.log('Бот запущен!');
+  console.log('Сервер запущен!');
 });
+
+function showMainMenu(chatId) {
+  bot.sendMessage(chatId, 'Главное меню:', mainMenu);
+}
